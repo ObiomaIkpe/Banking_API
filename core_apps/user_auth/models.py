@@ -52,6 +52,7 @@ class User(AbstractUser):
     )
     last_name = models.CharField(_("Last Name"), max_length=30)
     id_no = models.PositiveIntegerField(_("ID Number"), unique=True)
+    
     account_status = models.CharField(
         _("Account Status"),
         max_length=10,

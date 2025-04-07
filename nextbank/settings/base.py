@@ -58,7 +58,7 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
-    # "core_apps.user_auth.middleware.CustomHeaderMiddleware",
+    "core_apps.user_auth.middleware.CustomHeaderMiddleware",
 ]
 
 ROOT_URLCONF = "nextbank.urls"
@@ -121,7 +121,6 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
-AUTH_USER_MODEL = "user_auth.User"
 
 
 # Internationalization
@@ -147,6 +146,9 @@ STATIC_ROOT = str(BASE_DIR / "staticfiles")
 # https://docs.djangoproject.com/en/4.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+AUTH_USER_MODEL = "user_auth.User"
+
+
 DEFAULT_BIRTH_DATE = date(1980, 1, 1)
 DEFAULT_DATE = date(2000, 1, 1)
 DEFAULT_EXPIRY_DATE = date(2024, 1, 1)
@@ -198,6 +200,17 @@ DJOSER_SETTINGS = {
     "PASSWORD_RESET_CONFIRM_URL": "reset-password/{uid}/{token}",
     "SERIALIZERS" : {
         "user_create": "core_apps.user_auth.serializers.UserCreateSerialzer"
+    },
+}
+
+SPECTACULAR_SETTINGS = {
+    "TITLE": "NextGen Bank API",
+    "DESCRIPTION": "An API built for a banking system",
+    "VERSION": "1.0.0",
+    "SERVE_INCLUDE_SCHEMA": False,
+    "LICENSE": {
+        "name": "MIT License",
+        "url": "https://opensource.org/license/mit",
     },
 }
 

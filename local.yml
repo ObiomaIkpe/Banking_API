@@ -1,0 +1,8 @@
+services:
+    api: &api
+        build:
+            context: .
+            dockerfile: ./docker/local/django/Dockerfile
+        volumes:
+            - .:/app:z
+

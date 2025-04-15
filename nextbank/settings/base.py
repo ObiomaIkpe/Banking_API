@@ -1,7 +1,8 @@
+from operator import truediv
 from pathlib import Path
 from dotenv import load_dotenv
 from os import getenv, path
-from loguru import logger   
+from loguru import logger
 import cloudinary
 from datetime import timedelta, date
 
@@ -10,7 +11,7 @@ BASE_DIR = Path(__file__).resolve(strict=True).parent.parent.parent
 
 APPS_DIR = BASE_DIR / "core_apps"
 
-local_env_file = path.join(BASE_DIR, ".envs", ".env.production")
+local_env_file = path.join(BASE_DIR, ".envs", ".env.local")
 
 if path.isfile(local_env_file):
     load_dotenv(local_env_file)
@@ -44,7 +45,7 @@ LOCAL_APPS = [
     "core_apps.user_auth",
     "core_apps.common",
     "core_apps.user_profile",
-    # "core_apps.accounts",
+    "core_apps.accounts",
     # "core_apps.cards",
 ]
 
@@ -122,7 +123,6 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 
-
 # Internationalization
 # https://docs.djangoproject.com/en/4.2/topics/i18n/
 
@@ -157,7 +157,7 @@ DEFAULT_PHONE_NUMBER = "+2349124002801"
 
 
 REST_FRAMEWORK = {
-    "DEFAULT_SCHEMA_CLASS" : "drf_spectacular.openapi.AutoSchema",
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "core_apps.common.cookie_auth.CookieAuthentication",
     ],
@@ -165,27 +165,22 @@ REST_FRAMEWORK = {
         "rest_framework.permissions.IsAuthenticated",
     ],
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
-    "DEFAULT_FILTER_BACKENDS": [
-        "django_filters.rest_framework.DjangoFilterBackend"
-    ],
+    "DEFAULT_FILTER_BACKENDS": ["django_filters.rest_framework.DjangoFilterBackend"],
     "PAGE_SIZE": 10,
     "DEFAULT_THROTTLE_CLASSES": [
         "rest_framework.throttling.AnonRateThrottle",
         "rest_framework.throttling.UserRateThrottle",
     ],
-    "DEFAULT_THROTTLE_RATES": {
-        "anon": "50/day",
-        "user": "100/day"
-    }
+    "DEFAULT_THROTTLE_RATES": {"anon": "50/day", "user": "100/day"},
 }
 
 SIMPLE_JWT = {
     "SIGNING_KEY": getenv("SIGNING_KEY"),
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=30),
-    "REFRSH_TOKEN_LIFETIME": timedelta(days=1),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=1),
     "ROTATE_REFRESH_TOKENS": True,
     "USER_ID_FIELD": "id",
-    "USER_ID_CLAIM": "user_id"
+    "USER_ID_CLAIM": "user_id",
 }
 
 DJOSER_SETTINGS = {
@@ -198,8 +193,8 @@ DJOSER_SETTINGS = {
     "PASSWORD_RESET_CONFIRM_RETYPE": True,
     "ACTIVATION_URL": "activate/{uid}/{token}",
     "PASSWORD_RESET_CONFIRM_URL": "reset-password/{uid}/{token}",
-    "SERIALIZERS" : {
-        "user_create": "core_apps.user_auth.serializers.UserCreateSerialzer"
+    "SERIALIZERS": {
+        "user_create": "core_apps.user_auth.serializers.UserCreateSerializer"
     },
 }
 
@@ -215,14 +210,31 @@ SPECTACULAR_SETTINGS = {
 }
 
 
-CLOUDINARY_CLOUD_NAME = getenv("CLOUDINARY_CLOUD_NAME") 
+if USE_TZ:
+    CELERY_TIMEZONE = TIME_ZONE
+
+CELERY_BROKER_URL = getenv("CELERY_BROKER_URL")
+CELERY_RESULT_BACKEND = getenv("CELERY_RESULT_BACKEND")
+CELERY_ACCEPT_CONTENT = ["application/json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_RESULT_BACKEND_MAX_RETRIES = 10
+CELERY_TASK_SEND_EVENT = True
+CELERY_RESULT_EXTENDED = True
+CELERY_RESULT_BACKEND_ALWAYS_RETRY = True
+CELERY_TASK_TIME_LIMIT = 5 * 60
+CELERY_TASK_SOFT_TIME_LIMIT = 60
+CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
+CELERY_WORKER_SEND_TASK_EVENTS = True
+
+CLOUDINARY_CLOUD_NAME = getenv("CLOUDINARY_CLOUD_NAME")
 CLOUDINARY_API_KEY = getenv("CLOUDINARY_API_KEY")
 CLOUDINARY_API_SECRET = getenv("CLOUDINARY_API_SECRET")
 
 cloudinary.config(
     cloud_name=CLOUDINARY_CLOUD_NAME,
     api_key=CLOUDINARY_API_KEY,
-    api_secret=CLOUDINARY_API_SECRET
+    api_secret=CLOUDINARY_API_SECRET,
 )
 
 COOKIE_NAME = "access"
@@ -236,7 +248,6 @@ COOKIE_HTTPONLY = True
 COOKIE_SECURE = getenv("COOKIE_SECURE", "TRUE") == "True"
 
 
-
 LOGGING_CONFIG = None
 
 LOGURU_LOGGING = {
@@ -248,9 +259,9 @@ LOGURU_LOGGING = {
             "format": "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} - {message}",
             "rotation": "10MB",
             "retention": "30 days",
-            "compression": "zip"
+            "compression": "zip",
         },
-         {
+        {
             "sink": BASE_DIR / "logs/error.log",
             "level": "ERROR",
             "format": "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} - {message}",
@@ -258,7 +269,7 @@ LOGURU_LOGGING = {
             "retention": "30 days",
             "compression": "zip",
             "backtrace": True,
-            "diagnose": True
+            "diagnose": True,
         },
     ]
 }
@@ -266,8 +277,7 @@ logger.configure(**LOGURU_LOGGING)
 
 LOGGING = {
     "version": 1,
-    "disable_existing_loggers": False,  
+    "disable_existing_loggers": False,
     "handlers": {"loguru": {"class": "interceptor.InterceptHandler"}},
-    "root": {"handlers": ["loguru"], "level": "DEBUG"}
+    "root": {"handlers": ["loguru"], "level": "DEBUG"},
 }
-

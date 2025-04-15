@@ -19,9 +19,8 @@ class User(AbstractUser):
             "favorite_color",
             _("What is your favorite color?"),
         )
-        BIRTH_CITY = ("birth_city",
-                 _("What is the city where you were born?"))
-        
+        BIRTH_CITY = ("birth_city", _("What is the city where you were born?"))
+
         CHILDHOOD_FRIEND = (
             "childhood_friend",
             _("What is the name of your childhood best friend?"),
@@ -52,7 +51,7 @@ class User(AbstractUser):
     )
     last_name = models.CharField(_("Last Name"), max_length=30)
     id_no = models.PositiveIntegerField(_("ID Number"), unique=True)
-    
+
     account_status = models.CharField(
         _("Account Status"),
         max_length=10,

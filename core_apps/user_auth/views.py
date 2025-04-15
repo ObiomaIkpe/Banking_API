@@ -2,6 +2,7 @@ from django.http import JsonResponse
 from django.views import View
 from loguru import logger
 
+
 class TestLoggingView(View):
     def get(self, request):
         logger.debug("this is a debug message")
@@ -10,7 +11,6 @@ class TestLoggingView(View):
         logger.error("this is an error message")
         logger.critical("this is a critical message")
         return JsonResponse({"message": "testing logging with loguru"})
-    
 
 
 from typing import Any, Optional
@@ -24,7 +24,7 @@ from rest_framework.response import Response
 from rest_framework.request import Request
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
-
+from rest_framework_simplejwt.views import TokenRefreshView
 
 
 from .emails import send_otp_email
@@ -33,20 +33,25 @@ from .utils import generate_otp
 
 user = get_user_model()
 
-def set_auth_cookies(response: Response, access_token: str, refresh_token: Optional[str]=None) -> None:
-    access_token_lifetime = settings.SIMPLE_JWT['ACCESS_TOKEN_LIFETIME'].total_seconds()
+
+def set_auth_cookies(
+    response: Response, access_token: str, refresh_token: Optional[str] = None
+) -> None:
+    access_token_lifetime = settings.SIMPLE_JWT["ACCESS_TOKEN_LIFETIME"].total_seconds()
     cookie_settings = {
         "path": settings.COOKIE_PATH,
         "secure": settings.COOKIE_SECURE,
         "httponly": settings.COOKIE_HTTPONLY,
         "samesite": settings.COOKIE_SAMESITE,
-        "max_age": access_token_lifetime
+        "max_age": access_token_lifetime,
     }
 
     response.set_cookie("access", access_token, **cookie_settings)
 
     if refresh_token:
-        refresh_token_lifetime = settings.SIMPLEJWT["REFRESH_TOKEN_LIFETIME"].total_seconds()
+        refresh_token_lifetime = settings.SIMPLEJWT[
+            "REFRESH_TOKEN_LIFETIME"
+        ].total_seconds()
         refresh_cookie_settings = cookie_settings.copy()
         refresh_cookie_settings["max_age"] = refresh_token_lifetime
 
@@ -65,7 +70,7 @@ class CustomTokenCreateView(TokenCreateView):
                 {
                     "error": f"account is locked out due to multiple failed login attempts. Please try again after {settings.LOCKOUT_DURATION.total_seconds() / 60} seconds."
                 },
-                status= status.HTTP_403_FORBIDDEN,
+                status=status.HTTP_403_FORBIDDEN,
             )
         user.reset_failed_login_attempts()
 
@@ -76,20 +81,17 @@ class CustomTokenCreateView(TokenCreateView):
         logger.info(f"OTP sent for login to user: {user.email}")
 
         return Response(
-            {
-                "success": "OTP sent to your email",
-                "email": user.email
-            },
-            status = status.HTTP_200_OK
+            {"success": "OTP sent to your email", "email": user.email},
+            status=status.HTTP_200_OK,
         )
-    
+
     def post(self, request: Request, *args: Any, **kwargs) -> Response:
         serializer = self.get_serializer(data=request.data)
 
         try:
             serializer.is_valid(raise_exception=True)
         except Exception:
-            email = request.data.get('email')
+            email = request.data.get("email")
             user = User.objects.filter(email=email).first()
             if user:
                 user.handle_failed_login_attempts()
@@ -103,18 +105,18 @@ class CustomTokenCreateView(TokenCreateView):
                         {
                             "error": f"account is locked out due to multiple failed login attempts. Please try again after {settings.LOCKOUT_DURATION.total_seconds() / 60} seconds."
                         },
-                        status = status.HTTP_403_FORBIDDEN
+                        status=status.HTTP_403_FORBIDDEN,
                     )
                 else:
-                    logger.error(f"failed login attempts for non-existent user : {email}")
+                    logger.error(
+                        f"failed login attempts for non-existent user : {email}"
+                    )
 
                 return Response(
-                    {
-                        "error": "your login credentials are not correct"
-                    },
-                    status= status.HTTP_400_BAD_REQUEST
+                    {"error": "your login credentials are not correct"},
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
-            return self._action(serializer)
+        return self._action(serializer)
 
 
 class CustomTokenRefreshView(TokenRefreshView):
@@ -143,10 +145,10 @@ class CustomTokenRefreshView(TokenRefreshView):
                 refresh_res.data["message"] = "Access tokens refreshed successfully"
 
             else:
-                refresh_res.data["message"] = "Access or Refresh tokens not found in response data"
-                logger.error(
+                refresh_res.data["message"] = (
                     "Access or Refresh tokens not found in response data"
                 )
+                logger.error("Access or Refresh tokens not found in response data")
         return refresh_res
 
 
@@ -158,28 +160,26 @@ class OTPVerifyVIew(APIView):
 
         if not otp:
             return Response(
-                {
-                    "error": "OTP is required"
-                },
+                {"error": "OTP is required"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         user = User.objects.filter(otp=otp, otp_expiry_time__gt=timezone.now()).first()
 
         if not user:
             return Response(
-                {
-                    "error": "invalid or expired OTP"
-                },
+                {"error": "invalid or expired OTP"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         if user.is_locked_out:
             return Response(
-                {"error": f"account is locked due to multiple login attempts."
-                 f"please try again after {settings.LOCKOUT_DURATION.total_seconds() / 60} mins"},
-                 status = status.HTTP_403_FORBIDDEN
-            ) 
-        
+                {
+                    "error": f"account is locked due to multiple login attempts."
+                    f"please try again after {settings.LOCKOUT_DURATION.total_seconds() / 60} mins"
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         user.verify_otp(otp)
 
         refresh = RefreshToken.for_user(user)
@@ -190,13 +190,13 @@ class OTPVerifyVIew(APIView):
             {
                 "success": "Login successful, now add your profile information so that we can create an account for you"
             },
-            status = status.HTTP_200_OK
+            status=status.HTTP_200_OK,
         )
 
         set_auth_cookies(response, access_token, refresh_token)
         logger.info(f"Successful login with OTP, {user.email}")
         return response
-    
+
 
 class LogoutAPIView(APIView):
     def post(self, request, *args: Any, **kwargs: Any):
@@ -205,9 +205,3 @@ class LogoutAPIView(APIView):
         response.delete_cookie("refresh")
         response.delete_cookie("logged_in")
         return response
-
-
-
-
-
-

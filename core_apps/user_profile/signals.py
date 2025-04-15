@@ -9,7 +9,9 @@ from core_apps.user_profile.models import Profile
 
 
 @receiver(post_save, sender=AUTH_USER_MODEL)
-def create_user_profile(sender: Type[Model], instance: Model, created:bool, **kwargs: Any):
+def create_user_profile(
+    sender: Type[Model], instance: Model, created: bool, **kwargs: Any
+):
     if created:
         Profile.objects.create(user=instance)
         logger.info(f"Profile created for {instance.first_name} {instance.last_name}")

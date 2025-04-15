@@ -10,23 +10,35 @@ from django.utils.translation import gettext_lazy as _
 
 User = get_user_model()
 
+
 class TimeStampedModel(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now_add=True)
-    
 
     class Meta:
         abstract = True
 
+
 class ContentView(TimeStampedModel):
-    content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE, verbose_name=_("Content Type"))
+    content_type = models.ForeignKey(
+        ContentType, on_delete=models.CASCADE, verbose_name=_("Content Type")
+    )
 
     object_id = models.UUIDField(verbose_name=_("Object ID"))
     content_object = GenericForeignKey("content_type", "object_id")
-    user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="content_views", verbose_name=_("User"))
+    user = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="content_views",
+        verbose_name=_("User"),
+    )
 
-    viewer_ip = models.GenericIPAddressField(verbose_name=_("Viewer IP address"), null=True, blank=True)
+    viewer_ip = models.GenericIPAddressField(
+        verbose_name=_("Viewer IP address"), null=True, blank=True
+    )
 
     last_viewed = models.DateTimeField()
 
@@ -35,15 +47,16 @@ class ContentView(TimeStampedModel):
         verbose_name_plural = _("Content Views")
         unique_together = ["content_type", "object_id"]
 
-        def __str__(self) -> str:           
-            return( f"{self.content_type} viewed by {self.user.get_fullname if self.user else 'anonymous'} from {self.viewer_ip}")
-        
+    def __str__(self) -> str:
+        return f"{self.content_type} viewed by {self.user.get_fullname if self.user else 'anonymous'} from {self.viewer_ip}"
 
-        @classmethod
-        def record_view(cls, content_object: Any, user: Optional[User], viewer_ip: Optional["str"]) -> None:
-            content_type = ContentType.objects.get_for_model(content_object)
-            try:
-                view, created = cls.objects.get_or_create(
+    @classmethod
+    def record_view(
+        cls, content_object: Any, user: Optional[User], viewer_ip: Optional["str"]
+    ) -> None:
+        content_type = ContentType.objects.get_for_model(content_object)
+        try:
+            view, created = cls.objects.get_or_create(
                 content_type=content_type,
                 object_id=content_object.id,
                 defaults={
@@ -52,8 +65,8 @@ class ContentView(TimeStampedModel):
                     "last_viewed": timezone.now(),
                 },
             )
-                if not created:
-                    view.last_viewed = timezone.now()
-                    view.save()
-            except IntegrityError:
-                pass
+            if not created:
+                view.last_viewed = timezone.now()
+                view.save()
+        except IntegrityError:
+            pass

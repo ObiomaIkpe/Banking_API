@@ -1,565 +1,222 @@
-import random
-from typing import Any
+from typing import Any, List
 
-from django.utils import timezone
-from rest_framework import generics, status, serializers
-from rest_framework.request import Request
-from rest_framework.response import Response
-from core_apps.common.permissions import IsAccountExecutive, IsTeller
-from core_apps.common.renderers import GenericJSONRenderer
-from .emails import (
-    send_full_activation_email,
-    send_deposit_email,
-    send_withdrawal_email,
-    send_transfer_email,
-    send_transfer_otp_email,
-)
-from .models import BankAccount, Transaction
-from decimal import Decimal
-from .serializers import (
-    AccountVerificationSerializer,
-    CustomerInfoSerializer,
-    DepositSerializer,
-    TransactionSerializer,
-    UsernameVerificationSerializer,
-    SecurityQuestionSerializer,
-    OTPVerificationSerializer,
-)
 from django.db import transaction
-from loguru import logger
-from .pagination import StandardResultsSetPagination
-from django_filters.rest_framework import DjangoFilterBackend
-from dateutil import parser
-from django.db.models import Q
-from rest_framework.filters import OrderingFilter
+from django.contrib.contenttypes.models import ContentType
+from django.http import Http404
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
-from rest_framework.views import APIView
-from rest_framework import status
-from .tasks import generate_transaction_pdf
+from django_filters.rest_framework import DjangoFilterBackend
+from rest_framework import status, filters, generics
+from rest_framework import serializers
+from rest_framework.pagination import PageNumberPagination
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
+from rest_framework.response import Response
+from rest_framework.request import Request
+
+from core_apps.common.models import ContentView
+from core_apps.common.permissions import IsBranchManager
+from core_apps.accounts.utils import create_bank_account
+from core_apps.accounts.models import BankAccount
+from core_apps.common.renderers import GenericJSONRenderer
+from .models import NextOfKin, Profile
+from .serializers import NextOfKinSerializer, ProfileListSerializer, ProfileSerializer
 
 
-class AccountVerificationView(generics.UpdateAPIView):
-    queryset = BankAccount.objects.all()
-    serializer_class = AccountVerificationSerializer
+class StandardResultsSetPagination(PageNumberPagination):
+    page_size = 10
+    page_size_query_param = "page_size"
+    max_page_size = 100
+
+
+class ProfileListAPIView(generics.ListAPIView):
+    serializer_class = ProfileListSerializer
     renderer_classes = [GenericJSONRenderer]
-    object_label = "verification"
-    permission_classes = [IsAccountExecutive]
+    pagination_class = StandardResultsSetPagination
+    object_label = "profiles"
+    permission_classes = [IsBranchManager]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+    search_fields = ["user__first_name", "user__last_name", "user__id_no"]
+    filterset_fields = ["user__first_name", "user__last_name", "user__id_no"]
+
+    def get_queryset(self) -> List[Profile]:
+        return Profile.objects.exclude(user__is_staff=True).exclude(
+            user__is_superuser=True
+        )
+
+
+class ProfileDetailAPIView(generics.RetrieveUpdateAPIView):
+    serializer_class = ProfileSerializer
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+    renderer_classes = [GenericJSONRenderer]
+    object_label = "profile"
+
+    def get_object(self) -> Profile:
+        try:
+            profile = Profile.objects.get(user=self.request.user)
+            self.record_profile_view(profile)
+            return profile
+        except Profile.DoesNotExist:
+            raise Http404("Profile does not exist")
+
+    def record_profile_view(self, profile: Profile) -> None:
+        content_type = ContentType.objects.get_for_model(profile)
+        viewer_ip = self.get_client_ip()
+        user = self.request.user
+
+        obj, created = ContentView.objects.update_or_create(
+            content_type=content_type,
+            object_id=profile.id,
+            user=user,
+            viewer_ip=viewer_ip,
+            defaults={
+                "last_viewed": timezone.now(),
+            },
+        )
+
+    def get_client_ip(self) -> str:
+        x_forwarded_for = self.request.META.get("HTTP_X_FORWARDED_FOR")
+        if x_forwarded_for:
+            ip = x_forwarded_for.split(",")[0]
+        else:
+            ip = self.request.META.get("REMOTE_ADDR")
+        return ip
+
+    def retrieve(self, request: Request, *args: Any, **kwargs: Any) -> Response:
+        instance = self.get_object()
+        serializer = self.get_serializer(instance)
+        return Response(serializer.data)
 
     def update(self, request: Request, *args: Any, **kwargs: Any) -> Response:
-        instance = self.get_object()
-
-        if instance.kyc_verified and instance.fully_activated:
-            return Response(
-                {
-                    "message": "This Account has already been verified and fully activated"
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
         partial = kwargs.pop("partial", False)
+        instance = self.get_object()
         serializer = self.get_serializer(instance, data=request.data, partial=partial)
 
-        if serializer.is_valid(raise_exception=True):
-            kyc_submitted = serializer.validated_data.get(
-                "kyc_submitted", instance.kyc_submitted
-            )
-
-            kyc_verified = serializer.validated_data.get(
-                "kyc_verified", instance.kyc_verified
-            )
-
-            if kyc_verified and not kyc_submitted:
-                return Response(
-                    {"error": "KYC must be submitted before it can be verified."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            instance.kyc_submitted = kyc_submitted
-            instance.save()
-
-            if kyc_submitted and kyc_verified:
-                instance.kyc_verified = kyc_verified
-                instance.verification_date = serializer.validated_data.get(
-                    "verification_date", timezone.now()
-                )
-                instance.verification_notes = serializer.validated_data.get(
-                    "verification_notes", ""
-                )
-                instance.verified_by = request.user
-                instance.fully_activated = True
-                instance.account_status = BankAccount.AccountStatus.ACTIVE
-                instance.save()
-
-                send_full_activation_email(instance)
-
-            return Response(
-                {
-                    "message": "Account Verification status updated successfully",
-                    "data": self.get_serializer(instance).data,
-                }
-            )
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
-class DepositView(generics.CreateAPIView):
-    serializer_class = DepositSerializer
-    renderer_classes = [GenericJSONRenderer]
-    object_label = "deposit"
-    permission_classes = [IsTeller]
-
-    def get(self, request: Request, *args: Any, **kwargs: Any) -> Response:
-        account_number = request.query_params.get("account_number")
-        if not account_number:
-            return Response(
-                {"error": "Account number is required"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
         try:
-            account = BankAccount.objects.get(account_number=account_number)
-            serializer = CustomerInfoSerializer(account)
-            return Response(serializer.data)
-        except BankAccount.DoesNotExist:
-            return Response(
-                {"error": "Account number does not exist"},
-                status=status.HTTP_404_NOT_FOUND,
-            )
+            serializer.is_valid(raise_exception=True)
+            with transaction.atomic():
+                updated_instance = serializer.save()
 
-    @transaction.atomic
+                if updated_instance.is_complete_with_next_of_kin():
+                    existing_account = BankAccount.objects.filter(
+                        user=request.user,
+                        currency=updated_instance.account_currency,
+                        account_type=updated_instance.account_type,
+                    ).first()
+
+                    if not existing_account:
+                        bank_account = create_bank_account(
+                            request.user,
+                            currency=updated_instance.account_currency,
+                            account_type=updated_instance.account_type,
+                        )
+                        message = (
+                            "Profile updated and new bank account created successfully. An email "
+                            "has been sent to you with further instructions"
+                        )
+                    else:
+                        message = (
+                            "Profile updated successfully. No new account created as one already "
+                            "exists for this currency and type."
+                        )
+                    return Response(
+                        {
+                            "message": message,
+                            "data": serializer.data,
+                        },
+                        status=status.HTTP_200_OK,
+                    )
+                else:
+                    return Response(
+                        {
+                            "message": "Profile updated successfully. Please complete all "
+                            "required fields and at least one next of kin to create a "
+                            "bank account.",
+                            "data": serializer.data,
+                        },
+                        status=status.HTTP_200_OK,
+                    )
+
+        except serializers.ValidationError as e:
+            return Response({"errors": e.detail}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+    def partial_update(self, request: Request, *args: Any, **kwargs: Any) -> Response:
+        kwargs["partial"] = True
+        return self.update(request, *args, **kwargs)
+
+    def perform_update(self, serializer: ProfileSerializer) -> None:
+        serializer.save()
+
+
+class NextOfKinAPIView(generics.ListCreateAPIView):
+    serializer_class = NextOfKinSerializer
+    pagination_class = StandardResultsSetPagination
+    renderer_classes = [GenericJSONRenderer]
+    object_label = "next_of_kin"
+
+    def get_queryset(self) -> List[NextOfKin]:
+        return NextOfKin.objects.filter(profile=self.request.user.profile)
+
+    def get_serializer_context(self) -> dict[str, Any]:
+        context = super().get_serializer_context()
+        context["profile"] = self.request.user.profile
+        return context
+
+    def list(self, request: Request, *args: Any, **kwargs: Any) -> Response:
+        queryset = self.get_queryset()
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+
     def create(self, request: Request, *args: Any, **kwargs: Any) -> Response:
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-
-        account = serializer.context["account"]
-        amount = serializer.validated_data["amount"]
-
-        try:
-            account.account_balance += amount
-            account.full_clean()
-            account.save()
-
-            logger.info(
-                f"Deposit of {amount} made to account {account.account_number} by teller "
-                f"{request.user.email}"
-            )
-
-            send_deposit_email(
-                user=account.user,
-                user_email=account.user.email,
-                amount=amount,
-                currency=account.currency,
-                new_balance=account.account_balance,
-                account_number=account.account_number,
-            )
-            return Response(
-                {
-                    "message": f"Successfully deposited {amount} to account "
-                    f"{account.account_number}",
-                    "new_balance": str(account.account_balance),
-                },
-                status=status.HTTP_200_OK,
-            )
-
-        except Exception as e:
-            logger.error(f"Error during deposit: {str(e)}")
-            return Response(
-                {"error": "An error occurred during the deposit"},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-
-
-class InitiateWithdrawalView(generics.CreateAPIView):
-    serializer_class = TransactionSerializer
-    renderer_classes = [GenericJSONRenderer]
-    object_label = "initiate_withdrawal"
-
-    def create(self, request: Request, *args: Any, **kwargs: Any) -> Response:
-        account_number = request.data.get("account_number")
-        amount = request.data.get("amount")
-
-        if not account_number:
-            return Response(
-                {"error": "Account number is required"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        try:
-            account = BankAccount.objects.get(
-                account_number=account_number, user=request.user
-            )
-
-            if not (account.fully_activated and account.kyc_verified):
-                return Response(
-                    {
-                        "error": "Your account is not fully verified. Please complete the "
-                        "verification process"
-                    },
-                    status=status.HTTP_403_FORBIDDEN,
-                )
-        except BankAccount.DoesNotExist:
-            return Response(
-                {"error": "You are not authorized to withdraw from this account"},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-        serializer = self.get_serializer(
-            data={
-                "amount": amount,
-                "description": f"Withdrawal from account {account_number}",
-                "transaction_type": Transaction.TransactionType.WITHDRAWAL,
-                "sender_account": account_number,
-                "receiver_account": account_number,
-            }
-        )
-        try:
-            serializer.is_valid(raise_exception=True)
-        except serializers.ValidationError as e:
-            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-
-        amount = serializer.validated_data["amount"]
-
-        if account.account_balance < amount:
-            return Response(
-                {"error": "Insufficient funds for withdrawal"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        request.session["withdrawal_data"] = {
-            "account_number": account_number,
-            "amount": str(amount),
-        }
-        logger.info("Withdrawal data stored in session")
-
+        self.perform_create(serializer)
+        headers = self.get_success_headers(serializer.data)
         return Response(
-            {
-                "message": "Withdrawal Initiated. Please verify your username to complete the "
-                "withdrawal",
-                "next_step": "Verify your username to complete the withdrawal",
-            },
-            status=status.HTTP_200_OK,
+            serializer.data, status=status.HTTP_201_CREATED, headers=headers
         )
 
+    def perform_create(self, serializer: NextOfKinSerializer) -> None:
+        serializer.save()
 
-class VerifyUsernameAndWithdrawAPIView(generics.CreateAPIView):
-    serializer_class = UsernameVerificationSerializer
+
+class NextOfKinDetailAPIView(generics.RetrieveUpdateDestroyAPIView):
+    serializer_class = NextOfKinSerializer
     renderer_classes = [GenericJSONRenderer]
-    object_label = "verify_username_and_withdraw"
+    object_label = "next_of_kin"
 
-    @transaction.atomic
-    def create(self, request: Request, *args: Any, **kwargs: Any) -> Response:
-        serializer = self.get_serializer(
-            data=request.data, context={"request": request}
-        )
+    def get_queryset(self) -> List[NextOfKin]:
+        return NextOfKin.objects.filter(profile=self.request.user.profile)
+
+    def get_object(self) -> NextOfKin:
+        queryset = self.get_queryset()
+        obj = get_object_or_404(queryset, pk=self.kwargs["pk"])
+        self.check_object_permissions(self.request, obj)
+        return obj
+
+    def retrieve(self, request: Request, *args: Any, **kwargs: Any) -> Response:
+        instance = self.get_object()
+        serializer = self.get_serializer(instance)
+        return Response(serializer.data)
+
+    def update(self, request: Request, *args: Any, **kwargs: Any) -> Response:
+        partial = kwargs.pop("partial", False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
         serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+        return Response(serializer.data)
 
-        withdrawal_data = request.session.get("withdrawal_data")
-        if not withdrawal_data:
-            return Response(
-                {
-                    "error": "No pending withdrawal found. Please initiate a withdrawal first"
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        account_number = withdrawal_data["account_number"]
-        amount = Decimal(withdrawal_data["amount"])
-
-        try:
-            account = BankAccount.objects.get(
-                account_number=account_number, user=request.user
-            )
-        except BankAccount.DoesNotExist:
-            return Response(
-                {"error": f"Account number {account_number} does not exist"},
-                status=status.HTTP_404_NOT_FOUND,
-            )
-        if account.account_balance < amount:
-            return Response(
-                {"error": "Insufficient funds for withdrawal"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        account.account_balance -= amount
-        account.save()
-
-        withdraw_transaction = Transaction.objects.create(
-            user=request.user,
-            sender=request.user,
-            sender_account=account,
-            amount=amount,
-            description=f"Withdrawal from account {account_number}",
-            transaction_type=Transaction.TransactionType.WITHDRAWAL,
-            status=Transaction.TransactionStatus.COMPLETED,
-        )
-        logger.info(f"Withdrawal of {amount} made from account {account_number}")
-
-        send_withdrawal_email(
-            user=account.user,
-            user_email=account.user.email,
-            amount=amount,
-            currency=account.currency,
-            new_balance=account.account_balance,
-            account_number=account.account_number,
-        )
-
-        del request.session["withdrawal_data"]
-
+    def destroy(self, request: Request, *args: Any, **kwargs: Any) -> Response:
+        instance = self.get_object()
+        self.perform_destroy(instance)
         return Response(
-            {
-                "message": "Withdrawal completed successfully",
-                "transaction": TransactionSerializer(withdraw_transaction).data,
-            },
-            status=status.HTTP_200_OK,
-        )
-
-
-class InitiateTransferView(generics.CreateAPIView):
-    serializer_class = TransactionSerializer
-    renderer_classes = [GenericJSONRenderer]
-    object_label = "initiate_transfer"
-
-    def create(self, request: Request, *args: Any, **kwargs: Any) -> Response:
-        data = request.data.copy()
-        data["transaction_type"] = Transaction.TransactionType.TRANSFER
-
-        sender_account_number = data.get("sender_account")
-        receiver_account_number = data.get("receiver_account")
-
-        try:
-            sender_account = BankAccount.objects.get(
-                account_number=sender_account_number, user=request.user
-            )
-            if not (sender_account.fully_activated and sender_account.kyc_verified):
-                return Response(
-                    {
-                        "error": "This account is not fully verified. Please complete the "
-                        "verification process, by visiting any of our local bank branches"
-                    },
-                    status=status.HTTP_403_FORBIDDEN,
-                )
-        except BankAccount.DoesNotExist:
-            return Response(
-                {
-                    "error": "Sender account number not found or you're not authorized to use "
-                    "this account."
-                },
-                status=status.HTTP_404_NOT_FOUND,
-            )
-
-        serializer = self.get_serializer(data=data)
-
-        if serializer.is_valid():
-            request.session["transfer_data"] = {
-                "sender_account": sender_account_number,
-                "receiver_account": receiver_account_number,
-                "amount": str(serializer.validated_data["amount"]),
-                "description": serializer.validated_data.get("description", ""),
-            }
-            return Response(
-                {
-                    "message": "Please answer your security question to proceed with the transfer",
-                    "next_step": "verify security question",
-                },
-                status=status.HTTP_200_OK,
-            )
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
-class VerifySecurityQuestionView(generics.CreateAPIView):
-    serializer_class = SecurityQuestionSerializer
-    renderer_classes = [GenericJSONRenderer]
-    object_label = "verification_answer"
-
-    def create(self, request, *args, **kwargs):
-        serializer = self.get_serializer(
-            data=request.data, context={"request": request}
-        )
-        if serializer.is_valid():
-            otp = "".join([str(random.randint(0, 9)) for _ in range(6)])
-            request.user.set_otp(otp)
-            send_transfer_otp_email(request.user.email, otp)
-            return Response(
-                {
-                    "message": "Security question verified. An OTP has been sent to your email",
-                    "next_step": "verify otp",
-                },
-                status=status.HTTP_200_OK,
-            )
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
-class VerifyOTPView(generics.CreateAPIView):
-    serializer_class = OTPVerificationSerializer
-    renderer_classes = [GenericJSONRenderer]
-    object_label = "verify_otp"
-
-    def create(self, request, *args, **kwargs):
-        serializer = self.get_serializer(
-            data=request.data, context={"request": request}
-        )
-        if serializer.is_valid():
-            return self.process_transfer(request)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-    def process_transfer(self, request) -> Response:
-        transfer_data = request.session.get("transfer_data")
-        if not transfer_data:
-            return Response(
-                {"error": "Transfer data not found. Please start the process again."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        try:
-            sender_account = BankAccount.objects.get(
-                account_number=transfer_data["sender_account"]
-            )
-            receiver_account = BankAccount.objects.get(
-                account_number=transfer_data["receiver_account"]
-            )
-        except BankAccount.DoesNotExist:
-            return Response(
-                {"error": "One or both accounts not found"},
-                status=status.HTTP_404_NOT_FOUND,
-            )
-
-        amount = Decimal(transfer_data["amount"])
-
-        if sender_account.account_balance < amount:
-            return Response(
-                {"error": "Insufficient funds for transfer"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        sender_account.account_balance -= amount
-        receiver_account.account_balance += amount
-        sender_account.save()
-        receiver_account.save()
-
-        transfer_transaction = Transaction.objects.create(
-            user=request.user,
-            sender=request.user,
-            sender_account=sender_account,
-            receiver=receiver_account.user,
-            receiver_account=receiver_account,
-            amount=amount,
-            description=transfer_data.get("description", ""),
-            transaction_type=Transaction.TransactionType.TRANSFER,
-            status=Transaction.TransactionStatus.COMPLETED,
-        )
-
-        del request.session["transfer_data"]
-
-        send_transfer_email(
-            sender_name=sender_account.user.full_name,
-            sender_email=sender_account.user.email,
-            receiver_name=receiver_account.user.full_name,
-            receiver_email=receiver_account.user.email,
-            amount=amount,
-            currency=sender_account.currency,
-            sender_new_balance=sender_account.account_balance,
-            receiver_new_balance=receiver_account.account_balance,
-            sender_account_number=sender_account.account_number,
-            receiver_account_number=receiver_account.account_number,
-        )
-
-        logger.info(
-            f"Transfer of {amount} made from account {sender_account.account_number} to "
-            f"{receiver_account.account_number}"
-        )
-
-        return Response(
-            TransactionSerializer(transfer_transaction).data,
-            status=status.HTTP_201_CREATED,
-        )
-
-
-class TransactionListAPIView(generics.ListAPIView):
-    serializer_class = TransactionSerializer
-    pagination_class = StandardResultsSetPagination
-    filter_backends = [DjangoFilterBackend, OrderingFilter]
-    ordering_fields = ["created_at", "amount"]
-    ordering = ["-created_at"]
-
-    def get_queryset(self):
-        user = self.request.user
-        queryset = Transaction.objects.filter(Q(sender=user) | Q(receiver=user))
-        start_date = self.request.query_params.get("start_date")
-        end_date = self.request.query_params.get("end_date")
-        account_number = self.request.query_params.get("account_number")
-
-        if start_date:
-            try:
-                start_date = parser.parse(start_date)
-                queryset = queryset.filter(created_at__gte=start_date)
-            except ValueError:
-                pass
-
-        if end_date:
-            try:
-                end_date = parser.parse(end_date)
-                queryset = queryset.filter(created_at__lte=end_date)
-            except ValueError:
-                pass
-
-        if account_number:
-            try:
-                account = BankAccount.objects.get(
-                    account_number=account_number, user=user
-                )
-                queryset = queryset.filter(
-                    Q(sender_account=account) | Q(receiver_account=account)
-                )
-            except BankAccount.DoesNotExist:
-                queryset = Transaction.objects.none()
-
-        return queryset
-
-    def list(self, request, *args, **kwargs) -> Response:
-        response = super().list(request, *args, **kwargs)
-
-        account_number = request.query_params.get("account_number")
-        if account_number:
-            logger.info(
-                f"User {request.user.email} successfully retrieved transactions for account: {account_number}"
-            )
-        else:
-            logger.info(
-                f"User {request.user.email} retrieved transactions(all accounts)"
-            )
-        return response
-
-
-class TransactionPDFView(APIView):
-    renderer_classes = [GenericJSONRenderer]
-    object_label = "transaction_pdf"
-
-    def post(self, request) -> Response:
-        user = request.user
-        start_date = request.data.get("start_date") or request.query_params.get(
-            "start_date"
-        )
-        end_date = request.data.get("end_date") or request.query_params.get("end_date")
-        account_number = request.data.get("account_number") or request.query_params.get(
-            "account_number"
-        )
-
-        if not end_date:
-            end_date = timezone.now().date().isoformat()
-
-        if not start_date:
-            start_date = (
-                (parser.parse(end_date) - timezone.timedelta(days=30))
-                .date()
-                .isoformat()
-            )
-        try:
-            start_date = parser.parse(start_date).date().isoformat()
-            end_date = parser.parse(end_date).date().isoformat()
-        except ValueError as e:
-            return Response(
-                {"error": f"Invalid date format: {str(e)}"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        generate_transaction_pdf.delay(user.id, start_date, end_date, account_number)
-
-        return Response(
-            {
-                "message": "Your Transaction history PDF is being generated and will be sent to "
-                "your email shortly",
-                "email": user.email,
-            },
-            status=status.HTTP_202_ACCEPTED,
+            {"message": "Next of Kin deleted successfully"},
+            status=status.HTTP_204_NO_CONTENT,
         )

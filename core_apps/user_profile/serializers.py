@@ -14,7 +14,6 @@ from rest_framework import serializers
 from core_apps.accounts.models import BankAccount
 from core_apps.common.models import ContentView
 
-# from core_apps.accounts.models import BankAccount
 from .models import Profile, NextOfKin
 from .tasks import upload_photos_to_cloudinary
 

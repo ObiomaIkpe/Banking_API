@@ -29,11 +29,11 @@ def generate_account_number(currency: str) -> str:
         secrets.choice("0123456789") for _ in range(remaining_digits)
     )
 
-    partial_Account_number = f"{prefix}{random_digits}"
+    partial_account_number = f"{prefix}{random_digits}"
 
-    check_digit = calculate_luhn_check_digit(partial_Account_number)
+    check_digit = calculate_luhn_check_digit(partial_account_number)
 
-    return f"{partial_Account_number}{check_digit}"
+    return f"{partial_account_number}{check_digit}"
 
 
 def calculate_luhn_check_digit(number: str) -> str:
@@ -57,15 +57,20 @@ def create_bank_account(user, currency: str, account_type: str) -> str:
     with transaction.atomic():
         while True:
             account_number = generate_account_number(currency)
-            if not BankAccount.objects.filter(account_number==account_number).exists()
+            if not BankAccount.objects.filter(
+                account_number == account_number
+            ).exists():
                 break
 
-            is_primary = not BankAccount.objects.filter(user==user).exists()
+            is_primary = not BankAccount.objects.filter(user == user).exists()
 
-            bank_account = BankAccount.objects.create(user=user, account_number=account_number,
-                                                      account_type=account_type, is_primary=is_primary)
+            bank_account = BankAccount.objects.create(
+                user=user,
+                account_number=account_number,
+                account_type=account_type,
+                is_primary=is_primary,
+            )
 
             send_account_creation_email(user, bank_account)
-
 
         return bank_account
